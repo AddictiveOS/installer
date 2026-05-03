@@ -347,10 +347,23 @@ def settle_block_devices(disk_path: str, log: Callable[[str], None]) -> None:
 
 def safe_unmount(mountpoint: str, log: Callable[[str], None]) -> None:
     try:
-        run_cmd(["umount", "-R", mountpoint], check=False, timeout=5)
+        result = run_cmd(["umount", "-R", mountpoint], check=False, timeout=3)
+        if result.returncode == 0:
+            return
+        err = (result.stderr or result.stdout or "").strip()
+        if err:
+            log(f"Unmount failed for {mountpoint}: {err}")
     except subprocess.TimeoutExpired:
         log(f"Unmount timed out for {mountpoint}; trying lazy unmount")
-        run_cmd(["umount", "-R", "-l", mountpoint], check=False)
+
+    try:
+        result = run_cmd(["umount", "-R", "-l", mountpoint], check=False, timeout=3)
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            if err:
+                log(f"Lazy unmount failed for {mountpoint}: {err}")
+    except subprocess.TimeoutExpired:
+        log(f"Lazy unmount timed out for {mountpoint}; continuing")
 
 
 def ensure_device_link(arch_path: Path, selected_path: Path | None, log: Callable[[str], None]) -> None:
@@ -795,6 +808,8 @@ class InstallScreen(Screen):
 
     def write_log(self, message: str) -> None:
         log_widget = self.query_one("#install_log", Log)
+        if not message.endswith("\n"):
+            message += "\n"
         self.app.call_from_thread(log_widget.write, message)
 
     @work(thread=True, exclusive=True)
