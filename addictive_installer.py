@@ -77,6 +77,7 @@ class InstallerState:
     wifi_ssid: str = ""
     wifi_password: str = ""
     wired_connected: bool = False
+    wired_ifaces: list[str] = field(default_factory=list)
     toolkits: list[str] = field(default_factory=list)
     disk_mode: str = "auto"
     disk_device: str = ""
@@ -131,20 +132,25 @@ def nmcli_available() -> bool:
 
 
 def wired_connected() -> bool:
+    return bool(wired_ifaces())
+
+
+def wired_ifaces() -> list[str]:
     if not nmcli_available():
-        return False
+        return []
     try:
         result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "dev"], check=False)
     except Exception:
-        return False
+        return []
+    ifaces: list[str] = []
     for line in result.stdout.splitlines():
         parts = line.split(":")
         if len(parts) != 3:
             continue
-        _dev, dev_type, state = parts
+        dev, dev_type, state = parts
         if dev_type == "ethernet" and state == "connected":
-            return True
-    return False
+            ifaces.append(dev)
+    return ifaces
 
 
 def list_wifi_networks() -> list[WifiNetwork]:
@@ -352,18 +358,22 @@ class NetworkScreen(WizardScreen):
     screen_title = "Network"
 
     def on_mount(self) -> None:
-        self.app.state.wired_connected = wired_connected()
+        self.app.state.wired_ifaces = wired_ifaces()
+        self.app.state.wired_connected = bool(self.app.state.wired_ifaces)
         self.refresh_wifi()
 
     def compose_body(self) -> ComposeResult:
-        yield Static("If you\'re on Ethernet, you can skip Wi-Fi. Otherwise, let\'s connect.")
+        yield Static("If you\'re on Ethernet, tick the checkbox and skip Wi-Fi. If not, connect below.")
         yield Static("", id="wired")
+        yield Checkbox("Use Ethernet (skip Wi-Fi)", id="use_ethernet")
         yield Select([], prompt="Select Wi-Fi network", id="wifi_list")
         yield Input(placeholder="Wi-Fi SSID", id="ssid")
         yield Input(placeholder="Wi-Fi password (leave blank for open networks)", password=True, id="wifi_pass")
         yield Button("Rescan Wi-Fi", id="rescan")
 
     def refresh_wifi(self) -> None:
+        self.app.state.wired_ifaces = wired_ifaces()
+        self.app.state.wired_connected = bool(self.app.state.wired_ifaces)
         wifi_list = self.query_one("#wifi_list", Select)
         networks = list_wifi_networks()
         options = []
@@ -373,13 +383,28 @@ class NetworkScreen(WizardScreen):
         wifi_list.options = options
         wired_label = self.query_one("#wired", Static)
         if self.app.state.wired_connected:
-            wired_label.update("Wired connection detected. Wi-Fi is optional.")
+            iface_list = ", ".join(self.app.state.wired_ifaces)
+            wired_label.update(f"Wired connection detected on: {iface_list}.")
         else:
             wired_label.update("No wired connection detected.")
+
+        use_ethernet = self.query_one("#use_ethernet", Checkbox)
+        use_ethernet.value = self.app.state.wired_connected
+        self.set_wifi_enabled(not use_ethernet.value)
+
+    def set_wifi_enabled(self, enabled: bool) -> None:
+        self.query_one("#wifi_list", Select).disabled = not enabled
+        self.query_one("#ssid", Input).disabled = not enabled
+        self.query_one("#wifi_pass", Input).disabled = not enabled
+        self.query_one("#rescan", Button).disabled = not enabled
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "wifi_list" and event.value:
             self.query_one("#ssid", Input).value = str(event.value)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "use_ethernet":
+            self.set_wifi_enabled(not event.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "rescan":
@@ -388,7 +413,10 @@ class NetworkScreen(WizardScreen):
         super().on_button_pressed(event)
 
     def validate(self) -> str | None:
-        if self.app.state.wired_connected:
+        use_ethernet = self.query_one("#use_ethernet", Checkbox).value
+        if use_ethernet:
+            if not self.app.state.wired_connected:
+                return "No wired connection detected. Plug in Ethernet or use Wi-Fi."
             return None
         ssid = self.query_one("#ssid", Input).value.strip()
         if not ssid:
@@ -396,9 +424,10 @@ class NetworkScreen(WizardScreen):
         return None
 
     def on_next(self) -> None:
-        ssid = self.query_one("#ssid", Input).value.strip()
-        password = self.query_one("#wifi_pass", Input).value
-        if not self.app.state.wired_connected:
+        use_ethernet = self.query_one("#use_ethernet", Checkbox).value
+        if not use_ethernet:
+            ssid = self.query_one("#ssid", Input).value.strip()
+            password = self.query_one("#wifi_pass", Input).value
             ok, msg = connect_wifi(ssid, password)
             if not ok:
                 self.set_status(msg)
