@@ -262,14 +262,14 @@ def selection_values(selection: SelectionList) -> list[str]:
 
 
 class WizardScreen(Screen):
-    title = ""
+    screen_title = ""
     show_back = True
     next_label = "Next"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with VerticalScroll(id="body"):
-            yield Static(self.title, id="screen-title")
+            yield Static(self.screen_title or "", id="screen-title")
             yield from self.compose_body()
             yield Static("", id="status")
         with Horizontal(id="nav"):
@@ -305,7 +305,7 @@ class WizardScreen(Screen):
 
 
 class WelcomeScreen(WizardScreen):
-    title = "Welcome to Addictive"
+    screen_title = "Welcome to Addictive"
     show_back = False
     next_label = "Let\'s go"
 
@@ -320,7 +320,7 @@ class WelcomeScreen(WizardScreen):
 
 
 class KeyboardScreen(WizardScreen):
-    title = "Keyboard layouts"
+    screen_title = "Keyboard layouts"
 
     def compose_body(self) -> ComposeResult:
         yield Static("Pick one or more keyboard layouts. You can add extras below if needed.")
@@ -349,7 +349,7 @@ class KeyboardScreen(WizardScreen):
 
 
 class NetworkScreen(WizardScreen):
-    title = "Network"
+    screen_title = "Network"
 
     def on_mount(self) -> None:
         self.app.state.wired_connected = wired_connected()
@@ -409,7 +409,7 @@ class NetworkScreen(WizardScreen):
 
 
 class ToolkitsScreen(WizardScreen):
-    title = "BlackArch toolkits"
+    screen_title = "BlackArch toolkits"
 
     def compose_body(self) -> ComposeResult:
         yield Static("Pick the toolsets you want installed. You can always add more later.")
@@ -424,7 +424,7 @@ class ToolkitsScreen(WizardScreen):
 
 
 class DiskScreen(WizardScreen):
-    title = "Disk setup"
+    screen_title = "Disk setup"
 
     def compose_body(self) -> ComposeResult:
         yield Static("Choose a disk and partitioning style. Auto will wipe the disk.")
@@ -464,7 +464,7 @@ class DiskScreen(WizardScreen):
 
 
 class ManualPartitionScreen(WizardScreen):
-    title = "Manual partitions"
+    screen_title = "Manual partitions"
 
     def compose_body(self) -> ComposeResult:
         yield Static("Select existing partitions. Formatting will wipe the chosen partition.")
@@ -501,7 +501,7 @@ class ManualPartitionScreen(WizardScreen):
 
 
 class AccountScreen(WizardScreen):
-    title = "Account creation"
+    screen_title = "Account creation"
 
     def compose_body(self) -> ComposeResult:
         yield Static("Set up your main user and hostname.")
@@ -537,7 +537,7 @@ class AccountScreen(WizardScreen):
 
 
 class TimezoneScreen(WizardScreen):
-    title = "Timezone"
+    screen_title = "Timezone"
 
     def on_mount(self) -> None:
         self.regions = list_timezones()
@@ -570,7 +570,7 @@ class TimezoneScreen(WizardScreen):
 
 
 class ReviewScreen(WizardScreen):
-    title = "Review & install"
+    screen_title = "Review & install"
     next_label = "Install"
 
     def compose_body(self) -> ComposeResult:
