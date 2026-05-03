@@ -1156,40 +1156,62 @@ def install_blackarch_toolkits(installation, toolkits: list[str], log: Callable[
     if not toolkits:
         return
 
-    groups: list[str] = []
+    def get_group_packages(group: str) -> list[str]:
+        try:
+            cmd = installation.arch_chroot(
+                f"bash -lc 'pacman -Sgq {group} 2>/dev/null || true'",
+                peek_output=True,
+            )
+        except Exception as exc:
+            log(f"Failed to query group {group}: {exc}")
+            return []
+
+        output = cmd.decode().strip()
+        if not output:
+            return []
+        return [line.strip() for line in output.splitlines() if line.strip()]
+
+    groups_to_install: list[tuple[str, str, list[str]]] = []
     missing: list[str] = []
 
     for name in toolkits:
         candidates = BLACKARCH_TOOLSETS.get(name, [])
         if isinstance(candidates, str):
             candidates = [candidates]
-        selected = None
+        selected_group = None
+        selected_packages: list[str] = []
         for group in candidates:
-            check = installation.arch_chroot(
-                f"sh -lc 'pacman -Sgq {group} >/dev/null 2>&1'",
-                peek_output=True,
-            )
-            if check.exit_code == 0:
-                selected = group
+            packages = get_group_packages(group)
+            if packages:
+                selected_group = group
+                selected_packages = packages
                 break
-        if selected:
-            groups.append(selected)
+        if selected_group:
+            groups_to_install.append((name, selected_group, selected_packages))
         else:
             missing.append(name)
 
     if missing:
         log("Skipping missing BlackArch toolkits: " + ", ".join(missing))
 
-    if not groups:
+    if not groups_to_install:
         return
 
-    log("Installing BlackArch toolkits: " + ", ".join(groups))
-    for group in groups:
-        installation.arch_chroot(
-            "sh -lc 'pacman -Sgq {group} | xargs -r pacman -S --needed --noconfirm'".format(
-                group=group,
-            ),
-        )
+    log("Installing BlackArch toolkits: " + ", ".join(group for _, group, _ in groups_to_install))
+    target_root = installation.target / "root"
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    for name, group, packages in groups_to_install:
+        safe_group = group.replace("/", "_")
+        pkg_file = target_root / f"blackarch-{safe_group}.txt"
+        pkg_file.write_text("\n".join(packages) + "\n")
+        log(f"Installing {name} ({group}) with {len(packages)} packages")
+        try:
+            installation.arch_chroot(
+                f"bash -lc 'xargs -r pacman -S --needed --noconfirm < /root/{pkg_file.name}'",
+            )
+        except Exception as exc:
+            log(f"Failed installing {name} ({group}); continuing: {exc}")
 
 
 def perform_installation(
