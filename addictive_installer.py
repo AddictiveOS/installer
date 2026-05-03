@@ -256,6 +256,83 @@ def list_partitions(disk_path: str) -> list[PartitionInfo]:
     return parts
 
 
+def lsblk_tree(disk_path: str) -> dict:
+    columns = "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,MOUNTPOINTS"
+    result = run_cmd(["lsblk", "-J", "-o", columns, disk_path], check=False)
+    if result.returncode != 0:
+        result = run_cmd(["lsblk", "-J", "-o", "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT", disk_path], check=False)
+    if result.returncode != 0:
+        return {}
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+
+
+def iter_lsblk_nodes(node: dict) -> list[dict]:
+    nodes = [node]
+    for child in node.get("children", []) or []:
+        nodes.extend(iter_lsblk_nodes(child))
+    return nodes
+
+
+def node_mountpoints(node: dict) -> list[str]:
+    mountpoints = []
+    if isinstance(node.get("mountpoints"), list):
+        mountpoints.extend([m for m in node.get("mountpoints") if m])
+    if node.get("mountpoint"):
+        mountpoints.append(node["mountpoint"])
+    return mountpoints
+
+
+def force_wipefs_for_disk(disk_path: str, log: Callable[[str], None]) -> None:
+    log(f"Force wiping signatures on {disk_path}")
+    run_cmd(["wipefs", "--all", "--force", disk_path], check=False)
+    for part in list_partitions(disk_path):
+        run_cmd(["wipefs", "--all", "--force", part.path], check=False)
+    run_cmd(["partprobe", disk_path], check=False)
+    run_cmd(["udevadm", "settle"], check=False)
+
+
+def prepare_disk_for_installation(state: InstallerState, log: Callable[[str], None]) -> None:
+    if state.disk_mode != "auto":
+        targets = [p for p in [state.manual_root, state.manual_boot, state.manual_home] if p]
+        for path in targets:
+            run_cmd(["swapoff", path], check=False)
+            run_cmd(["umount", "-R", path], check=False)
+        return
+
+    tree = lsblk_tree(state.disk_device)
+    if not tree:
+        return
+
+    critical_mounts = {"/", "/boot", "/boot/efi", "/efi"}
+
+    for dev in tree.get("blockdevices", []):
+        if dev.get("path") != state.disk_device:
+            continue
+        for node in iter_lsblk_nodes(dev):
+            for mountpoint in node_mountpoints(node):
+                if mountpoint in critical_mounts:
+                    raise RuntimeError(
+                        "Selected disk appears to be in use by the running system. "
+                        "Boot from the live ISO and try again."
+                    )
+                if mountpoint:
+                    log(f"Unmounting {mountpoint}")
+                    run_cmd(["umount", "-R", mountpoint], check=False)
+
+            if node.get("fstype") in ("swap", "linux-swap"):
+                path = node.get("path") or node.get("name")
+                if path:
+                    log(f"Swapoff {path}")
+                    run_cmd(["swapoff", path], check=False)
+
+            if node.get("type") == "crypt" and node.get("name"):
+                log(f"Closing LUKS mapping {node['name']}")
+                run_cmd(["cryptsetup", "close", node["name"]], check=False)
+
+
 def list_timezones() -> dict[str, list[str]]:
     zone_root = Path("/usr/share/zoneinfo")
     if not zone_root.exists():
@@ -996,9 +1073,21 @@ def perform_installation(state: InstallerState, log: Callable[[str], None]) -> N
     log("Building disk configuration")
     disk_config = build_disk_config(state, log)
 
+    log("Preparing disk")
+    prepare_disk_for_installation(state, log)
+
     log("Applying disk changes")
     fs_handler = FilesystemHandler(disk_config)
-    fs_handler.perform_filesystem_operations()
+    try:
+        fs_handler.perform_filesystem_operations()
+    except Exception as exc:
+        if state.disk_mode == "auto" and "wipefs" in str(exc):
+            log("wipefs failed; forcing cleanup and retrying once")
+            force_wipefs_for_disk(state.disk_device, log)
+            fs_handler = FilesystemHandler(disk_config)
+            fs_handler.perform_filesystem_operations()
+        else:
+            raise
 
     mountpoint = Path("/mnt")
 
