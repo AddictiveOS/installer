@@ -1286,9 +1286,15 @@ def perform_installation(
         )
 
         step("Updating dconf database")
-        dconf_check = installation.arch_chroot("command -v dconf", peek_output=True)
+        dconf_check = installation.arch_chroot(
+            "sh -lc 'command -v dconf >/dev/null 2>&1'",
+            peek_output=True,
+        )
         if dconf_check.exit_code == 0:
-            installation.arch_chroot("dconf update")
+            try:
+                installation.arch_chroot("dconf update")
+            except Exception as exc:
+                log(f"dconf update failed; continuing: {exc}")
         else:
             log("dconf not available yet; skipping dconf update")
 
