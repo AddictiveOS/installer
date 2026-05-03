@@ -599,22 +599,28 @@ class TimezoneScreen(WizardScreen):
 
     def on_mount(self) -> None:
         self.regions = list_timezones()
-        region_select = self.query_one("#region", Select)
-        region_options = [(r, r) for r in sorted(self.regions.keys())]
-        region_select.options = region_options
-        region_select.value = region_options[0][1]
-        self.refresh_cities(region_select.value)
+        self._init_timezone_selects()
 
     def compose_body(self) -> ComposeResult:
         yield Static("Pick your region and timezone.")
         yield Select([], prompt="Region", id="region")
         yield Select([], prompt="Timezone", id="city")
 
+    def _init_timezone_selects(self) -> None:
+        region_select = self.query_one("#region", Select)
+        region_options = [(r, r) for r in sorted(self.regions.keys())]
+        region_select.set_options(region_options)
+        if region_options:
+            region_select.value = region_options[0][1]
+            self.refresh_cities(str(region_select.value))
+
     def refresh_cities(self, region: str) -> None:
         city_select = self.query_one("#city", Select)
         cities = self.regions.get(region, ["UTC"])
-        city_select.options = [(c, c) for c in cities]
-        city_select.value = cities[0]
+        city_options = [(c, c) for c in cities]
+        city_select.set_options(city_options)
+        if city_options:
+            city_select.value = city_options[0][1]
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "region" and event.value:
