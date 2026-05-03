@@ -28,6 +28,7 @@ from textual.widgets import (
     Header,
     Input,
     Log,
+    ProgressBar,
     Select,
     SelectionList,
     Static,
@@ -800,6 +801,8 @@ class InstallScreen(Screen):
         yield Header(show_clock=True)
         with Container():
             yield Static("Installing Addictive. This can take a while.")
+            yield Static("Step 0/0: starting", id="progress_label")
+            yield ProgressBar(total=1, id="progress")
             yield Log(id="install_log")
         yield Footer()
 
@@ -812,13 +815,22 @@ class InstallScreen(Screen):
             message += "\n"
         self.app.call_from_thread(log_widget.write, message)
 
+    def set_progress(self, current: int, total: int, label: str) -> None:
+        def _update() -> None:
+            progress_label = self.query_one("#progress_label", Static)
+            progress_label.update(f"Step {current}/{total}: {label}")
+            progress_bar = self.query_one("#progress", ProgressBar)
+            progress_bar.update(total=total, progress=current)
+
+        self.app.call_from_thread(_update)
+
     @work(thread=True, exclusive=True)
     def run_install(self) -> None:
         def log(msg: str) -> None:
             self.write_log(msg)
 
         try:
-            perform_installation(self.app.state, log)
+            perform_installation(self.app.state, log, self.set_progress)
             log("Install complete. You can reboot when ready.")
         except Exception as exc:
             log(f"Install failed: {exc}")
@@ -1136,7 +1148,11 @@ def install_blackarch_toolkits(installation, toolkits: list[str], log: Callable[
     installation.arch_chroot("pacman -S --needed --noconfirm " + " ".join(pkgs))
 
 
-def perform_installation(state: InstallerState, log: Callable[[str], None]) -> None:
+def perform_installation(
+    state: InstallerState,
+    log: Callable[[str], None],
+    progress: Callable[[int, int, str], None] | None = None,
+) -> None:
     if os.geteuid() != 0:
         raise PermissionError("Run this installer as root.")
 
@@ -1148,13 +1164,50 @@ def perform_installation(state: InstallerState, log: Callable[[str], None]) -> N
     from archinstall.lib.models.users import Password, User
     from archinstall.lib.profile.profiles_handler import profile_handler
 
-    log("Building disk configuration")
+    def build_steps() -> list[str]:
+        steps = [
+            "Building disk configuration",
+            "Preparing disk",
+            "Applying disk changes",
+            "Mounting filesystems",
+        ]
+        if state.encrypt:
+            steps.append("Generating encryption key files")
+        steps += [
+            "Installing base system",
+            "Setting timezone",
+            "Installing GNOME profile",
+            "Installing core packages",
+            "Creating user",
+            "Adding bootloader",
+            "Writing keyboard configuration",
+            "Applying GNOME theming",
+            "Updating dconf database",
+            "Enabling BlackArch repositories",
+        ]
+        if state.toolkits:
+            steps.append("Installing BlackArch toolkits")
+        steps.append("Generating fstab")
+        return steps
+
+    steps = build_steps()
+    total = len(steps)
+    current = 0
+
+    def step(label: str) -> None:
+        nonlocal current
+        current += 1
+        if progress:
+            progress(current, total, label)
+        log(label)
+
+    step("Building disk configuration")
     disk_config = build_disk_config(state, log)
 
-    log("Preparing disk")
+    step("Preparing disk")
     prepare_disk_for_installation(state, log)
 
-    log("Applying disk changes")
+    step("Applying disk changes")
     fs_handler = FilesystemHandler(disk_config)
     try:
         fs_handler.perform_filesystem_operations()
@@ -1176,11 +1229,11 @@ def perform_installation(state: InstallerState, log: Callable[[str], None]) -> N
     mountpoint = Path("/mnt")
 
     with Installer(mountpoint, disk_config, kernels=["linux"]) as installation:
-        log("Mounting filesystems")
+        step("Mounting filesystems")
         installation.mount_ordered_layout()
 
         if disk_config.disk_encryption and state.encrypt:
-            log("Generating encryption key files")
+            step("Generating encryption key files")
             installation.generate_key_files()
 
         locale_config = LocaleConfiguration(
@@ -1189,22 +1242,22 @@ def perform_installation(state: InstallerState, log: Callable[[str], None]) -> N
             kb_layout=state.keyboard_layouts[0],
         )
 
-        log("Installing base system")
+        step("Installing base system")
         installation.minimal_installation(hostname=state.hostname, locale_config=locale_config)
 
-        log("Setting timezone")
+        step("Setting timezone")
         installation.set_timezone(state.timezone)
 
-        log("Installing GNOME profile")
+        step("Installing GNOME profile")
         gnome_profile = profile_handler.get_profile_by_name("GNOME")
         profile_config = ProfileConfiguration(profile=gnome_profile)
         profile_handler.install_profile_config(installation, profile_config)
 
-        log("Installing core packages")
-        installation.add_additional_packages(["networkmanager", "sudo"])
+        step("Installing core packages")
+        installation.add_additional_packages(["networkmanager", "sudo", "dconf"])
         installation.enable_service("NetworkManager")
 
-        log("Creating user")
+        step("Creating user")
         user = User(
             username=state.username,
             password=Password(plaintext=state.password),
@@ -1217,14 +1270,14 @@ def perform_installation(state: InstallerState, log: Callable[[str], None]) -> N
             profile_config.profile.post_install(installation)
             profile_config.profile.provision(installation, [user])
 
-        log("Adding bootloader")
+        step("Adding bootloader")
         bootloader = Bootloader.Systemd if is_uefi() else Bootloader.Grub
         installation.add_bootloader(bootloader)
 
-        log("Writing keyboard configuration")
+        step("Writing keyboard configuration")
         write_keyboard_config(installation.target, state.keyboard_layouts)
 
-        log("Applying GNOME theming")
+        step("Applying GNOME theming")
         apply_gnome_theming(installation.target, state.username, log)
         installation.chown(
             f"{state.username}:{state.username}",
@@ -1232,13 +1285,20 @@ def perform_installation(state: InstallerState, log: Callable[[str], None]) -> N
             options=["-R"],
         )
 
-        log("Updating dconf database")
-        installation.arch_chroot("dconf update")
+        step("Updating dconf database")
+        dconf_check = installation.arch_chroot("command -v dconf", peek_output=True)
+        if dconf_check.exit_code == 0:
+            installation.arch_chroot("dconf update")
+        else:
+            log("dconf not available yet; skipping dconf update")
 
+        step("Enabling BlackArch repositories")
         enable_blackarch(installation, log)
-        install_blackarch_toolkits(installation, state.toolkits, log)
+        if state.toolkits:
+            step("Installing BlackArch toolkits")
+            install_blackarch_toolkits(installation, state.toolkits, log)
 
-        log("Generating fstab")
+        step("Generating fstab")
         installation.genfstab()
 
 
