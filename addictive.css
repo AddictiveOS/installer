@@ -1,0 +1,118 @@
+/* addictive.css */
+Screen {
+    background: #111111;
+    color: #eeeeee;
+}
+
+#logo {
+    text-align: center;
+    color: #0FD29B;
+    text-style: bold;
+    padding: 2;
+    content-align: center middle;
+}
+
+Button {
+    background: #222222;
+    color: #0FD29B;
+    border: none;
+    margin: 1 2;
+    width: 100%;
+}
+
+Button:focus {
+    background: #0FD29B;
+    color: #111111;
+}
+
+Button.-primary {
+    background: #0FD29B;
+    color: #111111;
+}
+
+Button.-primary:focus {
+    background: #ffffff;
+    color: #111111;
+}
+
+Header {
+    background: #0FD29B;
+    color: #111111;
+}
+
+Footer {
+    background: #222222;
+    color: #0FD29B;
+}
+
+Input {
+    border: tall #0FD29B;
+    background: #1e1e1e;
+    margin: 1;
+}
+
+Input:focus {
+    border: tall #ffffff;
+}
+
+Select {
+    border: tall #0FD29B;
+    background: #1e1e1e;
+    margin: 1;
+}
+
+Select:focus {
+    border: tall #ffffff;
+}
+
+.step-title {
+    text-align: center;
+    color: #0FD29B;
+    text-style: bold;
+    padding: 1;
+    margin-bottom: 1;
+}
+
+.container {
+    width: 60%;
+    height: auto;
+    margin: 2;
+    padding: 2;
+    border: solid #0FD29B;
+    background: #181818;
+}
+
+.hidden {
+    display: none;
+}
+
+Checkbox {
+    background: #181818;
+    color: #eeeeee;
+    margin: 1;
+}
+
+Checkbox:focus {
+    color: #0FD29B;
+}
+
+RadioSet {
+    background: #181818;
+    margin: 1;
+}
+
+RadioButton {
+    color: #eeeeee;
+}
+
+RadioButton:focus {
+    color: #0FD29B;
+}
+
+RichLog {
+    height: 15;
+    border: solid #0FD29B;
+    background: #000000;
+    color: #0FD29B;
+    margin: 1;
+}

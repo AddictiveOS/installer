@@ -1,742 +1,428 @@
 #!/usr/bin/env python3
-
 import os
 import sys
 import json
-import asyncio
 import subprocess
-from pathlib import Path
+import urllib.request
+import shutil
+import time
+from textual.app import App, ComposeResult
+from textual.screen import Screen
+from textual.widgets import Header, Footer, Button, Static, Input, Select, Checkbox, RadioSet, RadioButton, RichLog
+from textual.containers import Container, Vertical, Horizontal
+from textual import work
 
-# Check for required dependencies before proceeding
-try:
-    from textual.app import App, ComposeResult
-    from textual.screen import Screen
-    from textual.widgets import (
-        Header, Footer, Button, Static, Label, Select, Input, Switch,
-        Checkbox, ProgressBar, RichLog, Markdown
-    )
-    from textual.containers import Container, Vertical, Horizontal
-    from textual.binding import Binding
-    from textual import work
-except ImportError:
-    print("Error: The 'textual' framework is required to run this installer.")
-    print("Please install it using: pip install textual")
-    sys.exit(1)
-
-# Try to import archinstall, fail gracefully if not running in the live env
-try:
-    import archinstall
-except ImportError:
-    archinstall = None
-
-
-# --- Theming & Constants ---
-ACCENT_COLOR = "#0FD29B"
-
-CUSTOM_CSS = f"""
-Screen {{
-    background: $surface;
-}}
-
-Header {{
-    background: {ACCENT_COLOR};
-    color: $background;
-    text-style: bold;
-}}
-
-Footer {{
-    background: $surface;
-    color: {ACCENT_COLOR};
-}}
-
-.title {{
-    text-align: center;
-    text-style: bold;
-    color: {ACCENT_COLOR};
-    margin: 1;
-}}
-
-.subtitle {{
-    text-align: center;
-    margin-bottom: 2;
-}}
-
-.step-container {{
-    align: center middle;
-    width: 100%;
-    height: 100%;
-    padding: 2 4;
-}}
-
-.nav-buttons {{
-    dock: bottom;
-    align: center middle;
-    height: 3;
-    margin-top: 2;
-}}
-
-Button {{
-    background: $boost;
-    color: $text;
-    border: none;
-}}
-
-Button:focus {{
-    background: {ACCENT_COLOR} 30%;
-}}
-
-Button.-primary {{
-    background: {ACCENT_COLOR};
-    color: $background;
-    text-style: bold;
-}}
-
-Button.-primary:focus {{
-    background: {ACCENT_COLOR} 80%;
-}}
-
-Input:focus, Select:focus {{
-    border: tall {ACCENT_COLOR};
-}}
-
-Switch:focus > .switch--slider {{
-    background: {ACCENT_COLOR};
-}}
-"""
-
-# --- Global State ---
-STATE = {
-    "keyboard_layout": "us",
-    "network_type": "auto",
+# Configuration state
+cfg = {
+    "keyboard": "us",
+    "network_type": "wired",
     "wifi_ssid": "",
-    "wifi_password": "",
+    "wifi_pass": "",
     "toolkits": [],
     "disk_mode": "auto",
-    "filesystem": "btrfs",
-    "encrypt_disk": False,
-    "encryption_password": "",
-    "drive": None,
+    "disk_drive": "",
+    "disk_fs": "btrfs",
+    "disk_encrypt": False,
+    "disk_pass": "",
     "username": "addictive",
     "password": "",
-    "hostname": "addictive-os",
-    "grant_root": True,
-    "timezone": "UTC",
+    "hostname": "addictive",
+    "root_privs": True,
+    "timezone": "UTC"
 }
 
-# --- Screens ---
+try:
+    import archinstall
+    HAS_ARCHINSTALL = True
+except ImportError:
+    HAS_ARCHINSTALL = False
 
-class BaseInstallScreen(Screen):
-    """Base screen providing standard layout and navigation."""
-    
+class InstallScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Container(classes="step-container"):
-            yield from self.compose_content()
-            with Horizontal(classes="nav-buttons"):
-                if self.show_back:
-                    yield Button("Back", id="btn_back")
-                yield Button("Next", id="btn_next", variant="primary")
-        yield Footer()
-
-    @property
-    def show_back(self) -> bool:
-        return True
-
-    def compose_content(self) -> ComposeResult:
-        yield Static("Override me")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_back":
-            self.app.pop_screen()
-        elif event.button.id == "btn_next":
-            self.save_state()
-            self.app.push_screen(self.next_screen())
-
-    def save_state(self):
-        pass
-
-    def next_screen(self) -> str:
-        return "welcome"
-
-
-class WelcomeScreen(BaseInstallScreen):
-    @property
-    def show_back(self) -> bool:
-        return False
-
-    def compose_content(self) -> ComposeResult:
-        yield Label("Welcome to Addictive OS", classes="title")
-        yield Label("The low-cortisol penetration testing environment.", classes="subtitle")
-        yield Markdown(
-            "This installer will guide you through setting up your system.\n\n"
-            "**Features included:**\n"
-            "- Arch Linux base\n"
-            "- BlackArch Repositories integration\n"
-            "- GNOME Desktop Environment\n"
-            "- Calming, distraction-free default setup\n\n"
-            "Take a deep breath. Press **Next** when you are ready to begin."
-        )
-
-    def next_screen(self) -> str:
-        return "keyboard"
-
-
-class KeyboardScreen(BaseInstallScreen):
-    def compose_content(self) -> ComposeResult:
-        yield Label("Keyboard Layout", classes="title")
-        yield Label("Select your primary keyboard layout.", classes="subtitle")
-        
-        # In a real scenario, we'd query localectl or archinstall for dynamic layouts.
-        # Hardcoding common ones to keep it robust out of the box.
-        layouts = [("US", "us"), ("UK", "gb"), ("German", "de"), ("French", "fr"), ("Spanish", "es")]
-        yield Select(layouts, value=STATE["keyboard_layout"], id="sel_kb")
-
-    def save_state(self):
-        STATE["keyboard_layout"] = self.query_one("#sel_kb", Select).value
-
-    def next_screen(self) -> str:
-        return "network"
-
-
-class NetworkScreen(BaseInstallScreen):
-    def compose_content(self) -> ComposeResult:
-        yield Label("Internet Connection", classes="title")
-        yield Label("A network connection is required to fetch packages.", classes="subtitle")
-        
-        with Vertical():
-            yield Label("We'll setup NetworkManager on the installed system.")
-            yield Label("Select your current connection method:")
-            yield Select([("Wired / Auto (Skip config)", "auto"), ("Wi-Fi", "wifi")], value=STATE["network_type"], id="sel_net")
-            
-            with Container(id="wifi_config"):
-                yield Label("Select an Access Point:")
-                yield Select([("Scanning for networks...", "scanning")], value="scanning", id="sel_ssid")
-                yield Input(placeholder="Password", value=STATE["wifi_password"], id="inp_pass", password=True)
-
-    def on_mount(self) -> None:
-        self.query_one("#wifi_config").display = STATE["network_type"] == "wifi"
-        self.scan_wifi()
-
-    @work(thread=True)
-    def scan_wifi(self) -> None:
-        ssids = []
-        
-        # Helper to clean and add SSIDs
-        def add_ssids(new_list):
-            for s in new_list:
-                s = s.strip()
-                if s and s != "--" and s != "\\x00":
-                    ssids.append(s)
-
-        try:
-            # 1. Try nmcli (More reliable for names with spaces)
-            # Use --terse and --fields SSID to get just the names
-            result = subprocess.run(["nmcli", "-t", "-f", "SSID", "dev", "wifi"], capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                add_ssids(result.stdout.splitlines())
-        except Exception:
-            pass
-            
-        if not ssids:
-            try:
-                # 2. Try iwctl (Station get-networks)
-                # We'll be more careful with parsing here
-                result = subprocess.run(["iwctl", "station", "wlan0", "get-networks"], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    lines = result.stdout.splitlines()
-                    for line in lines:
-                        # iwctl output usually has '>' or spaces before the name
-                        # We look for the start of the table after headers
-                        if "----" in line or "Network name" in line:
-                            continue
-                        # Typical line: "  My Network Name          psk  "
-                        # Use regex or fixed width? Let's try to extract before 'psk', 'open', or '8021x'
-                        for sec in ["psk", "open", "8021x"]:
-                            if f"  {sec}" in line:
-                                ssid = line[:line.find(f"  {sec}")].strip().strip(">").strip()
-                                if ssid: ssids.append(ssid)
-                                break
-            except Exception:
-                pass
-
-        ssids = list(dict.fromkeys(ssids))
-        if not ssids:
-            ssids = ["Addictive-HQ", "Hackers-Lounge", "Coffee-Shop-Pro", "Home-Network"]
-            
-        self.app.call_from_thread(self.update_wifi_list, ssids)
-
-    def update_wifi_list(self, ssids: list) -> None:
-        try:
-            sel = self.query_one("#sel_ssid", Select)
-            options = [(s, s) for s in ssids]
-            sel.set_options(options)
-            
-            if options:
-                if STATE["wifi_ssid"] in ssids:
-                    sel.value = STATE["wifi_ssid"]
-                else:
-                    sel.value = options[0][1]
-        except Exception:
-            pass
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_next":
-            # Validation
-            if STATE["network_type"] == "wifi":
-                sel_ssid = self.query_one("#sel_ssid", Select)
-                password = self.query_one("#inp_pass", Input).value
-                
-                if not sel_ssid.value or sel_ssid.value == "scanning":
-                    self.app.notify("Please select a Wi-Fi network.", severity="error")
-                    return
-                if not password or len(password) < 8:
-                    self.app.notify("Password must be at least 8 characters.", severity="error")
-                    return
-            
-            self.save_state()
-            self.app.push_screen(self.next_screen())
-        elif event.button.id == "btn_back":
-            self.app.pop_screen()
-
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if event.select.id == "sel_net":
-            wifi_container = self.query_one("#wifi_config")
-            wifi_container.display = event.value == "wifi"
-
-    def save_state(self):
-        STATE["network_type"] = self.query_one("#sel_net", Select).value
-        if STATE["network_type"] == "wifi":
-            sel_ssid = self.query_one("#sel_ssid", Select)
-            if sel_ssid.value:
-                STATE["wifi_ssid"] = sel_ssid.value
-            STATE["wifi_password"] = self.query_one("#inp_pass", Input).value
-
-    def next_screen(self) -> str:
-        return "toolkits"
-
-
-class ToolkitsScreen(BaseInstallScreen):
-    def compose_content(self) -> ComposeResult:
-        yield Label("BlackArch Toolkits", classes="title")
-        yield Label("Select the specific tool groups you want to pre-install.", classes="subtitle")
-        
-        toolkits = [
-            ("blackarch-webapp", "Web Application Testing"),
-            ("blackarch-reversing", "Reverse Engineering"),
-            ("blackarch-recon", "Reconnaissance / OSINT"),
-            ("blackarch-crypto", "Cryptography"),
-            ("blackarch-wireless", "Wireless Attacks"),
-            ("blackarch-exploitation", "Exploitation Frameworks")
-        ]
-        
-        with Vertical(id="chk_toolkits"):
-            for pkg, desc in toolkits:
-                yield Checkbox(f"{desc} ({pkg})", id=f"chk_{pkg}", value=pkg in STATE["toolkits"])
-
-    def save_state(self):
-        selected = []
-        for chk in self.query(Checkbox):
-            if chk.value:
-                pkg_name = chk.id.replace("chk_", "")
-                selected.append(pkg_name)
-        STATE["toolkits"] = selected
-
-    def next_screen(self) -> str:
-        return "disk"
-
-
-class DiskScreen(BaseInstallScreen):
-    def compose_content(self) -> ComposeResult:
-        yield Label("Disk Setup", classes="title")
-        yield Label("Choose how Addictive OS will be installed on your disk.", classes="subtitle")
-        
-        # Mocking block devices. In reality, we'd use archinstall.sys_command('lsblk')
-        # We provide standard paths and a custom input option
-        drives = [("/dev/sda", "/dev/sda"), ("/dev/nvme0n1", "/dev/nvme0n1"), ("/dev/vda", "/dev/vda")]
-        
-        yield Label("Target Drive:")
-        yield Select(drives, value=STATE["drive"] or drives[0][1], id="sel_drive")
-        
-        yield Label("Filesystem:")
-        yield Select([("Btrfs (Recommended)", "btrfs"), ("ext4", "ext4"), ("xfs", "xfs")], value=STATE["filesystem"], id="sel_fs")
-        
-        with Horizontal():
-            yield Label("Encrypt Disk (LUKS): ")
-            yield Switch(value=STATE["encrypt_disk"], id="sw_encrypt")
-            
-        with Container(id="encrypt_config"):
-            yield Input(placeholder="Encryption Password", password=True, id="inp_enc_pass")
-
-    def on_mount(self) -> None:
-        self.query_one("#encrypt_config").display = STATE["encrypt_disk"]
-
-    def on_switch_changed(self, event: Switch.Changed) -> None:
-        if event.switch.id == "sw_encrypt":
-            self.query_one("#encrypt_config").display = event.value
-
-    def save_state(self):
-        STATE["drive"] = self.query_one("#sel_drive", Select).value
-        STATE["filesystem"] = self.query_one("#sel_fs", Select).value
-        STATE["encrypt_disk"] = self.query_one("#sw_encrypt", Switch).value
-        if STATE["encrypt_disk"]:
-            STATE["encryption_password"] = self.query_one("#inp_enc_pass", Input).value
-
-    def next_screen(self) -> str:
-        return "account"
-
-
-class AccountScreen(BaseInstallScreen):
-    def compose_content(self) -> ComposeResult:
-        yield Label("Account Creation", classes="title")
-        yield Label("Set up your primary user and machine identity.", classes="subtitle")
-        
-        yield Input(placeholder="Username", value=STATE["username"], id="inp_user")
-        yield Input(placeholder="Password", value=STATE["password"], id="inp_pass", password=True)
-        yield Input(placeholder="Hostname", value=STATE["hostname"], id="inp_host")
-        
-        with Horizontal():
-            yield Label("Grant sudo privileges (Recommended): ")
-            yield Switch(value=STATE["grant_root"], id="sw_sudo")
-
-    def save_state(self):
-        STATE["username"] = self.query_one("#inp_user", Input).value
-        STATE["password"] = self.query_one("#inp_pass", Input).value
-        STATE["hostname"] = self.query_one("#inp_host", Input).value
-        STATE["grant_root"] = self.query_one("#sw_sudo", Switch).value
-
-    def next_screen(self) -> str:
-        return "timezone"
-
-
-class TimezoneScreen(BaseInstallScreen):
-    def compose_content(self) -> ComposeResult:
-        yield Label("Timezone", classes="title")
-        yield Label("Select your local timezone.", classes="subtitle")
-        
-        timezones = [("UTC", "UTC"), ("America/New_York", "America/New_York"), 
-                     ("Europe/London", "Europe/London"), ("Europe/Berlin", "Europe/Berlin"),
-                     ("Asia/Tokyo", "Asia/Tokyo")]
-        yield Select(timezones, value=STATE["timezone"], id="sel_tz")
-
-    def save_state(self):
-        STATE["timezone"] = self.query_one("#sel_tz", Select).value
-
-    def next_screen(self) -> str:
-        return "review"
-
-
-class ReviewScreen(BaseInstallScreen):
-    def compose_content(self) -> ComposeResult:
-        yield Label("Review & Install", classes="title")
-        yield Label("Ensure everything looks correct before paving the disk.", classes="subtitle")
-        
-        summary = f"""
-**Keyboard Layout:** {STATE['keyboard_layout']}
-**Network:** {STATE['network_type']}
-**Toolkits:** {', '.join(STATE['toolkits']) if STATE['toolkits'] else 'None'}
-**Drive:** {STATE['drive']} ({STATE['filesystem']})
-**Encrypted:** {'Yes' if STATE['encrypt_disk'] else 'No'}
-**Username:** {STATE['username']}
-**Hostname:** {STATE['hostname']}
-**Timezone:** {STATE['timezone']}
-
-**Desktop Environment:** GNOME
-**Repositories:** Base + BlackArch
-"""
-        yield Markdown(summary, id="md_summary")
-        yield Label("[bold red]WARNING: Continuing will format the selected drive![/]")
-
-    def on_mount(self):
-        # Refresh summary when mounted in case user went back and changed something
-        summary = f"""
-**Keyboard Layout:** {STATE['keyboard_layout']}
-**Network:** {STATE['network_type']}
-**Toolkits:** {', '.join(STATE['toolkits']) if STATE['toolkits'] else 'None'}
-**Drive:** {STATE['drive']} ({STATE['filesystem']})
-**Encrypted:** {'Yes' if STATE['encrypt_disk'] else 'No'}
-**Username:** {STATE['username']}
-**Hostname:** {STATE['hostname']}
-**Timezone:** {STATE['timezone']}
-
-**Desktop Environment:** GNOME
-**Repositories:** Base + BlackArch
-"""
-        self.query_one("#md_summary", Markdown).update(summary)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_back":
-            self.app.pop_screen()
-        elif event.button.id == "btn_next":
-            # Initiate installation
-            self.app.push_screen("install")
-
-
-class InstallProgressScreen(Screen):
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        with Container(classes="step-container"):
-            yield Label("Installing Addictive OS...", classes="title")
-            yield ProgressBar(total=100, id="progress")
-            yield RichLog(id="log", highlight=True, markup=True)
-            with Horizontal(classes="nav-buttons"):
-                yield Button("Reboot", id="btn_reboot", variant="primary", disabled=True)
-                yield Button("Exit", id="btn_exit", disabled=True)
+        with Container(classes="container"):
+            yield Static("Installing Addictive OS...", classes="step-title")
+            yield RichLog(id="install_log", wrap=True)
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.log_widget = self.query_one("#log", RichLog)
-        self.progress = self.query_one("#progress", ProgressBar)
-        self.log_widget.write(f"[bold {ACCENT_COLOR}]Initiating installation sequence...[/]")
-        
-        # Start installation loop in the background so the UI doesn't freeze
-        asyncio.create_task(self.run_installation())
+        self.run_installation()
 
-    async def run_installation(self):
-        try:
-            # 1. Prepare configuration
-            self.log_widget.write("Preparing archinstall configuration payload...")
-            self.progress.advance(10)
-            await asyncio.sleep(1) # Simulated delay for visual flow
-            
-            config = self._build_archinstall_config()
-            self.log_widget.write("Payload built successfully.")
-            
-            # Write config to a file for passing to archinstall CLI/library
-            config_path = "/tmp/addictive_install_config.json"
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=4)
-            self.log_widget.write(f"Configuration saved to {config_path}")
-            self.progress.advance(10)
+    @work(thread=True)
+    def run_installation(self):
+        log = self.query_one("#install_log", RichLog)
+        self.app.call_from_thread(log.write, "[*] Preparing Addictive OS installation...")
 
-            # 2. Add BlackArch Repos (simulated script writing)
-            self.log_widget.write("[bold yellow]Queueing BlackArch repository configuration...[/]")
-            self._prepare_blackarch_script()
-            self.progress.advance(10)
-            await asyncio.sleep(1)
-            
-            # 3. Apply Wallpapers and Theming hooks
-            self.log_widget.write("Setting up custom hooks for Addictive OS themes and custom wallpapers...")
-            self._setup_custom_assets()
-            self.progress.advance(10)
-            await asyncio.sleep(1)
-
-            # 4. Invoke Archinstall (Simulated or Real)
-            self.log_widget.write(f"[bold {ACCENT_COLOR}]Executing archinstall backend...[/]")
-            
-            if archinstall and os.geteuid() == 0:
-                self.log_widget.write("Root privileges and archinstall detected.")
-                self.log_widget.write("[italic]In a live environment, the installer would now call archinstall.perform_installation() or run 'archinstall --config' in a subprocess.[/italic]")
-                # We simulate the subprocess call here because we are likely in a testing environment
-                # In production, we would use asyncio.create_subprocess_exec to run archinstall and parse its stdout
-            else:
-                self.log_widget.write("[italic]Not running as root or archinstall is missing. Simulating installation steps...[/]")
-            
-            # Simulate the installation steps for visual feedback
-            steps = [
-                "Partitioning and wiping disks...", 
-                "Formatting filesystems...", 
-                "Bootstraping base packages...", 
-                "Installing GNOME Desktop Environment...", 
-                "Downloading and installing BlackArch toolkits...", 
-                "Generating fstab...", 
-                "Configuring systemd-boot bootloader...", 
-                "Running post-install configuration hooks..."
-            ]
-            
-            for step in steps:
-                self.log_widget.write(step)
-                await asyncio.sleep(1.2) # Simulate work taking place
-                self.progress.advance(6)
-                
-            # 5. Final theming tweaks
-            self.log_widget.write(f"Applying final GNOME accent colors ({ACCENT_COLOR})...")
-            self.progress.advance(12)
-            await asyncio.sleep(0.5)
-
-            self.progress.update(progress=100)
-            self.log_widget.write("[bold green]Installation Complete! You are ready to start hacking.[/]")
-            
-            # Enable buttons upon completion
-            self.query_one("#btn_reboot").disabled = False
-            self.query_one("#btn_exit").disabled = False
-
-        except Exception as e:
-            self.log_widget.write(f"[bold red]Installation failed: {e}[/]")
-            self.query_one("#btn_exit").disabled = False
-
-    def _build_archinstall_config(self) -> dict:
-        """Constructs a dict compliant with archinstall's JSON config structure."""
-        config = {
-            "keyboard-layout": STATE["keyboard_layout"],
-            "sys-language": "en_US",
-            "sys-encoding": "UTF-8",
-            "hostname": STATE["hostname"],
-            "timezone": STATE["timezone"],
-            "ntp": True,
-            "bootloader": "systemd-bootctl",
+        # 1. Generate archinstall config
+        user_config = {
+            "keyboard-layout": cfg["keyboard"],
+            "bootloader": "systemd-boot",
             "swap": True,
-            "profiles": {
-                "profile": {
-                    "name": "desktop",
-                    "details": ["gnome"]
-                }
+            "hostname": cfg["hostname"],
+            "timezone": cfg["timezone"],
+            "profile": {
+                "type": "desktop",
+                "custom_settings": {"desktop_environment": "gnome"}
             },
-            "network": "NetworkManager",
-            "users": [
-                {
-                    "username": STATE["username"],
-                    "password": STATE["password"],
-                    "sudo": STATE["grant_root"]
-                }
-            ],
-            "packages": [
-                "btrfs-progs",
-                "networkmanager",
-                "git",
-                "vim",
-                "curl",
-                "wget"
-            ] + STATE["toolkits"],
-            # Provide a post-installation command/script to run setup hooks
-            "custom-commands": [
-                "bash /tmp/blackarch_setup.sh",
-                "bash /etc/addictive/setup_gnome.sh"
-            ]
+            "audio": "pipewire",
+            "network-management": "networkmanager",
+            "packages": ["wget", "curl", "git", "vim", "btrfs-progs", "networkmanager"],
+            "harddrives": [cfg["disk_drive"]] if cfg["disk_drive"] else []
         }
-        
-        # Disk layout configuration
-        config["disk_layouts"] = {
-            STATE["drive"]: {
-                "partitions": [
-                    {
-                        "boot": True,
-                        "encrypted": False,
-                        "filesystem": {"format": "fat32"},
-                        "mountpoint": "/boot",
-                        "size": "512MiB",
-                        "start": "1MiB",
-                        "type": "primary",
-                        "wipe": True
-                    },
-                    {
-                        "encrypted": STATE["encrypt_disk"],
-                        "filesystem": {"format": STATE["filesystem"]},
-                        "mountpoint": "/",
-                        "size": "100%",
-                        "start": "513MiB",
-                        "type": "primary",
-                        "wipe": True
-                    }
-                ],
-                "wipe": True
+
+        if cfg["disk_encrypt"] and cfg["disk_drive"]:
+            user_config["disk_encryption"] = {
+                "encryption_password": cfg["disk_pass"],
+                "encryption_type": "luks",
+                "partitions": "all"
             }
-        }
         
-        return config
+        if cfg["disk_drive"]:
+            user_config["disk_layouts"] = {
+                cfg["disk_drive"]: {
+                    "wipe": True,
+                    "partitions": [
+                        {
+                            "boot": True,
+                            "encrypted": False,
+                            "filesystem": {
+                                "format": "fat32"
+                            },
+                            "mountpoint": "/boot",
+                            "size": "512MiB",
+                            "start": "1MiB",
+                            "type": "primary",
+                            "wipe": True
+                        },
+                        {
+                            "encrypted": cfg["disk_encrypt"],
+                            "filesystem": {
+                                "format": cfg["disk_fs"]
+                            },
+                            "mountpoint": "/",
+                            "size": "100%",
+                            "start": "513MiB",
+                            "type": "primary",
+                            "wipe": True
+                        }
+                    ]
+                }
+            }
 
-    def _prepare_blackarch_script(self):
-        """Prepare the script to fetch and install the blackarch strap file."""
-        script_content = """#!/bin/bash
-echo "Installing BlackArch repositories..."
-curl -O https://blackarch.org/strap.sh
-chmod +x strap.sh
-./strap.sh
-pacman -Syu --noconfirm
+        user_creds = [
+            {
+                "username": cfg["username"],
+                "password": cfg["password"],
+                "sudo": cfg["root_privs"]
+            }
+        ]
+
+        # Save configuration
+        try:
+            with open("/tmp/user_configuration.json", "w") as f:
+                json.dump(user_config, f)
+            with open("/tmp/user_credentials.json", "w") as f:
+                json.dump({"!users": user_creds}, f)
+        except Exception as e:
+            self.app.call_from_thread(log.write, f"[!] Error writing config: {e}")
+
+        self.app.call_from_thread(log.write, "[*] Triggering archinstall backend...")
+        try:
+            if HAS_ARCHINSTALL:
+                # We pipe the output to ensure we don't freeze the TUI. In a real scenario we'd stream it.
+                subprocess.run(
+                    ["archinstall", "--config", "/tmp/user_configuration.json", "--creds", "/tmp/user_credentials.json", "--silent"],
+                    check=True, capture_output=True
+                )
+            else:
+                self.app.call_from_thread(log.write, "[!] Mock Mode: archinstall not found, simulating process...")
+                time.sleep(3)
+
+            self.app.call_from_thread(log.write, "[*] Arch installation complete. Proceeding with Addictive customizations...")
+            self.post_install(log)
+            self.app.call_from_thread(log.write, "[+] Addictive OS has been successfully installed! You may now reboot.")
+        except subprocess.CalledProcessError as e:
+            self.app.call_from_thread(log.write, f"[!] Installation failed: {e.stderr.decode('utf-8', errors='ignore')}")
+        except Exception as e:
+            self.app.call_from_thread(log.write, f"[!] An unexpected error occurred: {e}")
+
+    def post_install(self, log):
+        target_mnt = "/mnt"
+        
+        if not os.path.exists(target_mnt):
+            self.app.call_from_thread(log.write, "[!] Target /mnt not found, skipping post-install (Mock mode behavior).")
+            return
+
+        # Handle Wi-Fi if needed
+        if cfg["network_type"] == "wifi" and cfg["wifi_ssid"]:
+            self.app.call_from_thread(log.write, f"[*] Configuring Wi-Fi for {cfg['wifi_ssid']}...")
+            nm_dir = f"{target_mnt}/etc/NetworkManager/system-connections"
+            os.makedirs(nm_dir, exist_ok=True)
+            nm_conf = f"""[connection]
+id={cfg['wifi_ssid']}
+type=wifi
+
+[wifi]
+ssid={cfg['wifi_ssid']}
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk={cfg['wifi_pass']}
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
 """
-        try:
-            with open("/tmp/blackarch_setup.sh", "w") as f:
-                f.write(script_content)
-            os.chmod("/tmp/blackarch_setup.sh", 0o755)
-        except Exception:
-            pass # Ignore in dev environment without permissions
+            conf_path = f"{nm_dir}/{cfg['wifi_ssid']}.nmconnection"
+            with open(conf_path, "w") as f:
+                f.write(nm_conf)
+            os.chmod(conf_path, 0o600)
 
-    def _setup_custom_assets(self):
-        """Prepare post-installation hooks for custom assets and wallpapers."""
-        # Create directory structure for custom wallpapers
-        # In a real install, archinstall creates the chroot at /mnt or /mnt/archinstall
-        chroot_path = Path("/mnt/archinstall")
-        wallpaper_dir = chroot_path / "etc" / "addictive" / "wallpapers"
+        # BlackArch Setup
+        if cfg["toolkits"]:
+            self.app.call_from_thread(log.write, "[*] Setting up BlackArch repositories... (This might take a while)")
+            strap_script = f"{target_mnt}/tmp/strap.sh"
+            try:
+                urllib.request.urlretrieve("https://blackarch.org/strap.sh", strap_script)
+                os.chmod(strap_script, 0o755)
+                subprocess.run(["arch-chroot", target_mnt, "/tmp/strap.sh"], check=True, capture_output=True)
+                
+                self.app.call_from_thread(log.write, f"[*] Installing selected toolkits: {', '.join(cfg['toolkits'])}")
+                subprocess.run(["arch-chroot", target_mnt, "pacman", "-Sy", "--noconfirm", *cfg["toolkits"]], check=True, capture_output=True)
+            except Exception as e:
+                self.app.call_from_thread(log.write, f"[!] Failed to setup BlackArch: {e}")
+
+        # Theming & Wallpapers
+        self.app.call_from_thread(log.write, "[*] Applying Addictive OS custom aesthetics...")
+        wallpaper_src = "/etc/addictive/wallpapers"
+        wallpaper_dest = f"{target_mnt}/usr/share/backgrounds/addictive"
         
-        try:
-            wallpaper_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass # Ignore in test environment
+        if os.path.exists(wallpaper_src):
+            os.makedirs(wallpaper_dest, exist_ok=True)
+            for file in os.listdir(wallpaper_src):
+                shutil.copy(os.path.join(wallpaper_src, file), wallpaper_dest)
+            self.app.call_from_thread(log.write, "[+] Copied custom wallpapers.")
             
-        # Write a script to apply the wallpaper and accent color globally for users
-        # For GNOME, we can use dconf in /etc/dconf/profile/user
-        script_content = f"""#!/bin/bash
-# Addictive OS post-install setup for GNOME
-
-echo 'Setting up Addictive GNOME tweaks...'
-
-# Create dconf default overrides
-mkdir -p /etc/dconf/profile
-echo -e "user-db:user\\nsystem-db:local" > /etc/dconf/profile/user
-
-mkdir -p /etc/dconf/db/local.d
-cat <<EOF > /etc/dconf/db/local.d/00-addictive
-[org/gnome/desktop/interface]
-accent-color='{ACCENT_COLOR}'
-gtk-theme='Adwaita-dark'
-EOF
-
-# If there is a wallpaper present in the designated folder, set it as default
-WALLPAPER_FILE=\\$(ls /etc/addictive/wallpapers/ | head -n 1)
-if [ ! -z "\\$WALLPAPER_FILE" ]; then
-cat <<EOF >> /etc/dconf/db/local.d/00-addictive
-[org/gnome/desktop/background]
-picture-uri='file:///etc/addictive/wallpapers/\\$WALLPAPER_FILE'
-picture-uri-dark='file:///etc/addictive/wallpapers/\\$WALLPAPER_FILE'
-EOF
-fi
-
-# Apply the dconf overrides
-dconf update
+            wallpapers = os.listdir(wallpaper_dest)
+            if wallpapers:
+                wp_path = f"/usr/share/backgrounds/addictive/{wallpapers[0]}"
+                gschema_override = f"""
+[org.gnome.desktop.background]
+picture-uri='file://{wp_path}'
+picture-uri-dark='file://{wp_path}'
 """
-        try:
-            script_path = chroot_path / "etc" / "addictive" / "setup_gnome.sh"
-            script_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(script_path, "w") as f:
-                f.write(script_content)
-            os.chmod(script_path, 0o755)
-        except Exception:
-            pass
+                override_dir = f"{target_mnt}/usr/share/glib-2.0/schemas"
+                os.makedirs(override_dir, exist_ok=True)
+                with open(f"{override_dir}/99-addictive.gschema.override", "w") as f:
+                    f.write(gschema_override)
+                subprocess.run(["arch-chroot", target_mnt, "glib-compile-schemas", "/usr/share/glib-2.0/schemas"], check=True)
+        else:
+            self.app.call_from_thread(log.write, f"[-] No custom wallpapers found in {wallpaper_src}.")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn_exit":
-            self.app.exit(0)
-        elif event.button.id == "btn_reboot":
-            # For safety, commented out actual reboot call. 
-            # os.system("reboot")
-            self.app.exit(0)
-
-
-# --- Application Entrypoint ---
-
-class AddictiveInstaller(App):
-    """The main Addictive OS Installer TUI application."""
-    
-    CSS = CUSTOM_CSS
-    TITLE = "Addictive OS Installer"
-    
-    SCREENS = {
-        "welcome": WelcomeScreen,
-        "keyboard": KeyboardScreen,
-        "network": NetworkScreen,
-        "toolkits": ToolkitsScreen,
-        "disk": DiskScreen,
-        "account": AccountScreen,
-        "timezone": TimezoneScreen,
-        "review": ReviewScreen,
-        "install": InstallProgressScreen,
-    }
-
-    BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", show=True, priority=True)
-    ]
+class SummaryScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Review Installation Settings", classes="step-title")
+            yield RichLog(id="summary_log", wrap=True)
+            with Horizontal():
+                yield Button("Begin Installation", variant="primary", id="btn_install")
+                yield Button("Back", id="btn_back")
+        yield Footer()
 
     def on_mount(self) -> None:
-        self.push_screen("welcome")
+        log = self.query_one("#summary_log", RichLog)
+        log.write(f"Keyboard: {cfg['keyboard']}")
+        log.write(f"Network: {cfg['network_type'].upper()}")
+        log.write(f"Drive: {cfg['disk_drive']} ({cfg['disk_fs']}) | Encrypted: {cfg['disk_encrypt']}")
+        log.write(f"User: {cfg['username']} (Root: {cfg['root_privs']})")
+        log.write(f"Hostname: {cfg['hostname']}")
+        log.write(f"Timezone: {cfg['timezone']}")
+        tk_str = ', '.join(cfg['toolkits']) if cfg['toolkits'] else 'None'
+        log.write(f"Toolkits: {tk_str}")
+        log.write(f"Desktop Environment: GNOME")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_install":
+            self.app.push_screen(InstallScreen())
+        elif event.button.id == "btn_back":
+            self.app.pop_screen()
+
+class TimezoneScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Timezone Selection", classes="step-title")
+            tzs = ["UTC", "America/New_York", "America/Los_Angeles", "Europe/London", "Europe/Berlin", "Asia/Tokyo"]
+            yield Select(((tz, tz) for tz in tzs), value="UTC", id="tz_select")
+            yield Button("Next", variant="primary", id="btn_next")
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_next":
+            cfg["timezone"] = self.query_one("#tz_select", Select).value
+            self.app.push_screen(SummaryScreen())
+
+class AccountScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Account & System Info", classes="step-title")
+            yield Input(placeholder="Hostname (e.g., addictive)", value="addictive", id="hostname")
+            yield Input(placeholder="Username", id="username")
+            yield Input(placeholder="Password", password=True, id="password")
+            yield Checkbox("Grant Root (sudo) Privileges", value=True, id="root_privs")
+            yield Button("Next", variant="primary", id="btn_next")
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_next":
+            cfg["hostname"] = self.query_one("#hostname", Input).value
+            cfg["username"] = self.query_one("#username", Input).value
+            cfg["password"] = self.query_one("#password", Input).value
+            cfg["root_privs"] = self.query_one("#root_privs", Checkbox).value
+            
+            if cfg["username"] and cfg["password"] and cfg["hostname"]:
+                self.app.push_screen(TimezoneScreen())
+
+class DiskScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Disk Setup", classes="step-title")
+            drives = []
+            if os.path.exists("/sys/block"):
+                for d in os.listdir("/sys/block"):
+                    if not d.startswith("loop") and not d.startswith("ram") and not d.startswith("sr"):
+                        drives.append(f"/dev/{d}")
+            if not drives: drives = ["/dev/sda", "/dev/nvme0n1"]
+
+            yield Select(((d, d) for d in drives), prompt="Select Installation Drive", id="disk_drive")
+            yield Select((("btrfs", "btrfs"), ("ext4", "ext4")), value="btrfs", id="disk_fs")
+            yield Checkbox("Encrypt Disk (LUKS)", id="disk_encrypt")
+            yield Input(placeholder="Encryption Password", password=True, id="disk_pass", classes="hidden")
+            yield Button("Next", variant="primary", id="btn_next")
+        yield Footer()
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "disk_encrypt":
+            pass_input = self.query_one("#disk_pass", Input)
+            if event.value:
+                pass_input.remove_class("hidden")
+            else:
+                pass_input.add_class("hidden")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_next":
+            cfg["disk_drive"] = self.query_one("#disk_drive", Select).value
+            if not cfg["disk_drive"]:
+                # Require drive selection
+                return
+            cfg["disk_fs"] = self.query_one("#disk_fs", Select).value
+            cfg["disk_encrypt"] = self.query_one("#disk_encrypt", Checkbox).value
+            cfg["disk_pass"] = self.query_one("#disk_pass", Input).value
+            
+            if cfg["disk_encrypt"] and not cfg["disk_pass"]:
+                return # Prevent encrypt without password
+            self.app.push_screen(AccountScreen())
+
+class ToolkitsScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Select BlackArch Toolkits", classes="step-title")
+            yield Checkbox("Web Applications (blackarch-webapp)", id="tk_webapp")
+            yield Checkbox("Reverse Engineering (blackarch-reversing)", id="tk_reversing")
+            yield Checkbox("Exploitation (blackarch-exploitation)", id="tk_exploitation")
+            yield Checkbox("OSINT (blackarch-osint)", id="tk_osint")
+            yield Checkbox("Forensics (blackarch-forensic)", id="tk_forensic")
+            yield Button("Next", variant="primary", id="btn_next")
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_next":
+            cfg["toolkits"] = []
+            if self.query_one("#tk_webapp", Checkbox).value: cfg["toolkits"].append("blackarch-webapp")
+            if self.query_one("#tk_reversing", Checkbox).value: cfg["toolkits"].append("blackarch-reversing")
+            if self.query_one("#tk_exploitation", Checkbox).value: cfg["toolkits"].append("blackarch-exploitation")
+            if self.query_one("#tk_osint", Checkbox).value: cfg["toolkits"].append("blackarch-osint")
+            if self.query_one("#tk_forensic", Checkbox).value: cfg["toolkits"].append("blackarch-forensic")
+            self.app.push_screen(DiskScreen())
+
+class NetworkScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Internet Connection", classes="step-title")
+            yield RadioSet(
+                RadioButton("Wired Connection (Skip Wi-Fi)", id="net_wired", value=True),
+                RadioButton("Wi-Fi Setup", id="net_wifi"),
+                id="net_radios"
+            )
+            with Container(id="wifi_inputs", classes="hidden"):
+                yield Input(placeholder="SSID", id="wifi_ssid")
+                yield Input(placeholder="Password", password=True, id="wifi_pass")
+            yield Button("Next", variant="primary", id="btn_next")
+        yield Footer()
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        wifi_inputs = self.query_one("#wifi_inputs")
+        if event.pressed.id == "net_wifi":
+            wifi_inputs.remove_class("hidden")
+        else:
+            wifi_inputs.add_class("hidden")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_next":
+            radios = self.query_one("#net_radios", RadioSet)
+            cfg["network_type"] = "wifi" if radios.pressed_button.id == "net_wifi" else "wired"
+            if cfg["network_type"] == "wifi":
+                cfg["wifi_ssid"] = self.query_one("#wifi_ssid", Input).value
+                cfg["wifi_pass"] = self.query_one("#wifi_pass", Input).value
+                if not cfg["wifi_ssid"]:
+                    return # Require SSID
+            self.app.push_screen(ToolkitsScreen())
+
+class KeyboardScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Select Keyboard Layout", classes="step-title")
+            yield Select(
+                ((layout, layout) for layout in ["us", "uk", "de", "fr", "es", "it", "se", "no", "dk"]),
+                value="us", id="kbd_select"
+            )
+            yield Button("Next", variant="primary", id="btn_next")
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_next":
+            cfg["keyboard"] = self.query_one("#kbd_select", Select).value
+            self.app.push_screen(NetworkScreen())
+
+class WelcomeScreen(Screen):
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(classes="container"):
+            yield Static("Welcome to Addictive OS", id="logo")
+            yield Static("A low-cortisol, GNOME-based penetration testing environment powered by BlackArch.", classes="step-title")
+            yield Static("Let's get this deployment rolling. Relax, we've got the hard parts covered.")
+            yield Button("Start Installation", variant="primary", id="btn_start")
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_start":
+            self.app.push_screen(KeyboardScreen())
+
+class AddictiveInstaller(App):
+    CSS_PATH = "addictive.css"
+    BINDINGS = [("q", "quit", "Quit Installer")]
+    TITLE = "Addictive OS Installer"
+
+    def on_mount(self) -> None:
+        self.push_screen(WelcomeScreen())
 
 if __name__ == "__main__":
     app = AddictiveInstaller()
