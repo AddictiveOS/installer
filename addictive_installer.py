@@ -1131,10 +1131,24 @@ def apply_gnome_theming(target: Path, username: str, log: Callable[[str], None])
 
 
 def enable_blackarch(installation, log: Callable[[str], None]) -> None:
-    log("Enabling BlackArch repositories")
-    installation.add_additional_packages(["curl", "wget", "git"])  # for strap script
-    installation.arch_chroot("curl -fsSL https://blackarch.org/strap.sh -o /tmp/strap.sh")
-    installation.arch_chroot("chmod +x /tmp/strap.sh")
+    strap_url = "https://blackarch.org/strap.sh"
+    target_tmp = installation.target / "tmp"
+    target_tmp.mkdir(parents=True, exist_ok=True)
+    strap_path = target_tmp / "strap.sh"
+
+    if shutil.which("curl"):
+        cmd = ["curl", "-fsSL", strap_url, "-o", str(strap_path)]
+    elif shutil.which("wget"):
+        cmd = ["wget", "-qO", str(strap_path), strap_url]
+    else:
+        raise RuntimeError("Neither curl nor wget is available to download BlackArch strap.sh")
+
+    result = run_cmd(cmd, check=False)
+    if result.returncode != 0 or not strap_path.exists():
+        err = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Failed to download BlackArch strap.sh: {err or 'unknown error'}")
+
+    strap_path.chmod(0o755)
     installation.arch_chroot("/tmp/strap.sh")
 
 
