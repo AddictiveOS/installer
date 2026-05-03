@@ -341,6 +341,26 @@ def settle_block_devices(disk_path: str, log: Callable[[str], None]) -> None:
     run_cmd(["lsblk", "-f", disk_path], check=False)
 
 
+def ensure_device_link(arch_path: Path, selected_path: Path | None, log: Callable[[str], None]) -> None:
+    if arch_path.exists():
+        return
+
+    source = selected_path if selected_path and selected_path.exists() else None
+    if source is None:
+        disks = list_disks()
+        if len(disks) == 1:
+            source = Path(disks[0].path)
+
+    if source and source.exists():
+        try:
+            if arch_path.is_symlink() or arch_path.exists():
+                arch_path.unlink(missing_ok=True)
+            log(f"Creating device alias {arch_path} -> {source}")
+            os.symlink(source, arch_path)
+        except OSError as exc:
+            log(f"Failed to create device alias: {exc}")
+
+
 def list_timezones() -> dict[str, list[str]]:
     zone_root = Path("/usr/share/zoneinfo")
     if not zone_root.exists():
@@ -871,6 +891,8 @@ def build_disk_config(state: InstallerState, log: Callable[[str], None]):
         raise ValueError(
             f"Device not found: {state.disk_device}. Detected: {available or 'none'}"
         )
+
+    ensure_device_link(device.device_info.path, device_path if device_path.exists() else None, log)
 
     fs_type = FilesystemType[state.filesystem.upper()]
 
