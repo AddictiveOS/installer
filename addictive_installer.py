@@ -854,6 +854,15 @@ def build_disk_config(state: InstallerState, log: Callable[[str], None]):
         settle_block_devices(state.disk_device, log)
         device_handler.load_devices()
         device = device_handler.get_device(device_path)
+    if not device and device_handler.devices:
+        device = next(
+            (d for d in device_handler.devices if d.device_info.path.name == device_path.name),
+            None,
+        )
+    if not device and len(device_handler.devices) == 1:
+        only_device = device_handler.devices[0]
+        log(f"Falling back to detected device {only_device.device_info.path}")
+        device = only_device
     if not device:
         available = ", ".join(str(d.device_info.path) for d in device_handler.devices)
         raise ValueError(
