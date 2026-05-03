@@ -120,8 +120,12 @@ class WifiNetwork:
     signal: str
 
 
-def run_cmd(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, text=True, capture_output=True, check=check)
+def run_cmd(
+    cmd: list[str],
+    check: bool = True,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, text=True, capture_output=True, check=check, timeout=timeout)
 
 
 def is_uefi() -> bool:
@@ -298,7 +302,7 @@ def prepare_disk_for_installation(state: InstallerState, log: Callable[[str], No
         targets = [p for p in [state.manual_root, state.manual_boot, state.manual_home] if p]
         for path in targets:
             run_cmd(["swapoff", path], check=False)
-            run_cmd(["umount", "-R", path], check=False)
+            safe_unmount(path, log)
         settle_block_devices(state.disk_device, log)
         return
 
@@ -320,7 +324,7 @@ def prepare_disk_for_installation(state: InstallerState, log: Callable[[str], No
                     )
                 if mountpoint:
                     log(f"Unmounting {mountpoint}")
-                    run_cmd(["umount", "-R", mountpoint], check=False)
+                    safe_unmount(mountpoint, log)
 
             if node.get("fstype") in ("swap", "linux-swap"):
                 path = node.get("path") or node.get("name")
@@ -339,6 +343,14 @@ def settle_block_devices(disk_path: str, log: Callable[[str], None]) -> None:
     run_cmd(["partprobe", disk_path], check=False)
     run_cmd(["udevadm", "settle"], check=False)
     run_cmd(["lsblk", "-f", disk_path], check=False)
+
+
+def safe_unmount(mountpoint: str, log: Callable[[str], None]) -> None:
+    try:
+        run_cmd(["umount", "-R", mountpoint], check=False, timeout=5)
+    except subprocess.TimeoutExpired:
+        log(f"Unmount timed out for {mountpoint}; trying lazy unmount")
+        run_cmd(["umount", "-R", "-l", mountpoint], check=False)
 
 
 def ensure_device_link(arch_path: Path, selected_path: Path | None, log: Callable[[str], None]) -> None:
