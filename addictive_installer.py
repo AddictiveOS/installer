@@ -39,16 +39,16 @@ WALLPAPER_SOURCE_DIR = Path("/etc/addictive/wallpapers")
 WALLPAPER_TARGET_DIR = Path("/etc/addictive/wallpapers")
 
 BLACKARCH_TOOLSETS = {
-    "Web": "blackarch-webapp",
-    "Reverse Engineering": "blackarch-reversing",
-    "OSINT": "blackarch-osint",
-    "Crypto": "blackarch-crypto",
-    "Exploitation": "blackarch-exploitation",
-    "Forensics": "blackarch-forensic",
-    "Networking": "blackarch-networking",
-    "Wireless": "blackarch-wireless",
-    "Malware": "blackarch-malware",
-    "Scanner": "blackarch-scanner",
+    "Web": ["blackarch-webapp"],
+    "Reverse Engineering": ["blackarch-reversing"],
+    "OSINT": ["blackarch-osint", "blackarch-recon", "blackarch-social"],
+    "Crypto": ["blackarch-crypto"],
+    "Exploitation": ["blackarch-exploitation"],
+    "Forensics": ["blackarch-forensic"],
+    "Networking": ["blackarch-networking"],
+    "Wireless": ["blackarch-wireless"],
+    "Malware": ["blackarch-malware"],
+    "Scanner": ["blackarch-scanner"],
 }
 
 FILESYSTEM_OPTIONS = ["btrfs", "ext4", "xfs"]
@@ -1155,11 +1155,41 @@ def enable_blackarch(installation, log: Callable[[str], None]) -> None:
 def install_blackarch_toolkits(installation, toolkits: list[str], log: Callable[[str], None]) -> None:
     if not toolkits:
         return
-    pkgs = [BLACKARCH_TOOLSETS[name] for name in toolkits if name in BLACKARCH_TOOLSETS]
-    if not pkgs:
+
+    groups: list[str] = []
+    missing: list[str] = []
+
+    for name in toolkits:
+        candidates = BLACKARCH_TOOLSETS.get(name, [])
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        selected = None
+        for group in candidates:
+            check = installation.arch_chroot(
+                f"sh -lc 'pacman -Sgq {group} >/dev/null 2>&1'",
+                peek_output=True,
+            )
+            if check.exit_code == 0:
+                selected = group
+                break
+        if selected:
+            groups.append(selected)
+        else:
+            missing.append(name)
+
+    if missing:
+        log("Skipping missing BlackArch toolkits: " + ", ".join(missing))
+
+    if not groups:
         return
-    log(f"Installing BlackArch toolkits: {', '.join(pkgs)}")
-    installation.arch_chroot("pacman -S --needed --noconfirm " + " ".join(pkgs))
+
+    log("Installing BlackArch toolkits: " + ", ".join(groups))
+    for group in groups:
+        installation.arch_chroot(
+            "sh -lc 'pacman -Sgq {group} | xargs -r pacman -S --needed --noconfirm'".format(
+                group=group,
+            ),
+        )
 
 
 def perform_installation(
