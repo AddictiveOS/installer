@@ -290,8 +290,7 @@ def force_wipefs_for_disk(disk_path: str, log: Callable[[str], None]) -> None:
     run_cmd(["wipefs", "--all", "--force", disk_path], check=False)
     for part in list_partitions(disk_path):
         run_cmd(["wipefs", "--all", "--force", part.path], check=False)
-    run_cmd(["partprobe", disk_path], check=False)
-    run_cmd(["udevadm", "settle"], check=False)
+    settle_block_devices(disk_path, log)
 
 
 def prepare_disk_for_installation(state: InstallerState, log: Callable[[str], None]) -> None:
@@ -300,6 +299,7 @@ def prepare_disk_for_installation(state: InstallerState, log: Callable[[str], No
         for path in targets:
             run_cmd(["swapoff", path], check=False)
             run_cmd(["umount", "-R", path], check=False)
+        settle_block_devices(state.disk_device, log)
         return
 
     tree = lsblk_tree(state.disk_device)
@@ -331,6 +331,14 @@ def prepare_disk_for_installation(state: InstallerState, log: Callable[[str], No
             if node.get("type") == "crypt" and node.get("name"):
                 log(f"Closing LUKS mapping {node['name']}")
                 run_cmd(["cryptsetup", "close", node["name"]], check=False)
+    settle_block_devices(state.disk_device, log)
+
+
+def settle_block_devices(disk_path: str, log: Callable[[str], None]) -> None:
+    log(f"Settling block devices on {disk_path}")
+    run_cmd(["partprobe", disk_path], check=False)
+    run_cmd(["udevadm", "settle"], check=False)
+    run_cmd(["lsblk", "-f", disk_path], check=False)
 
 
 def list_timezones() -> dict[str, list[str]]:
@@ -1081,9 +1089,15 @@ def perform_installation(state: InstallerState, log: Callable[[str], None]) -> N
     try:
         fs_handler.perform_filesystem_operations()
     except Exception as exc:
-        if state.disk_mode == "auto" and "wipefs" in str(exc):
+        error_text = str(exc)
+        if state.disk_mode == "auto" and "wipefs" in error_text:
             log("wipefs failed; forcing cleanup and retrying once")
             force_wipefs_for_disk(state.disk_device, log)
+            fs_handler = FilesystemHandler(disk_config)
+            fs_handler.perform_filesystem_operations()
+        elif "Unable to determine new partition" in error_text or "Unable to determine new uuid" in error_text:
+            log("Partition info not ready; settling devices and retrying once")
+            settle_block_devices(state.disk_device, log)
             fs_handler = FilesystemHandler(disk_config)
             fs_handler.perform_filesystem_operations()
         else:
