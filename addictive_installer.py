@@ -78,6 +78,7 @@ class InstallerState:
     wifi_password: str = ""
     wired_connected: bool = False
     wired_ifaces: list[str] = field(default_factory=list)
+    use_ethernet: bool | None = None
     toolkits: list[str] = field(default_factory=list)
     disk_mode: str = "auto"
     disk_device: str = ""
@@ -137,11 +138,11 @@ def wired_connected() -> bool:
 
 def wired_ifaces() -> list[str]:
     if not nmcli_available():
-        return []
+        return wired_ifaces_sysfs()
     try:
         result = run_cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "dev"], check=False)
     except Exception:
-        return []
+        return wired_ifaces_sysfs()
     ifaces: list[str] = []
     for line in result.stdout.splitlines():
         parts = line.split(":")
@@ -150,6 +151,33 @@ def wired_ifaces() -> list[str]:
         dev, dev_type, state = parts
         if dev_type == "ethernet" and state == "connected":
             ifaces.append(dev)
+    ifaces += [i for i in wired_ifaces_sysfs() if i not in ifaces]
+    return ifaces
+
+
+def wired_ifaces_sysfs() -> list[str]:
+    sys_class = Path("/sys/class/net")
+    if not sys_class.exists():
+        return []
+    ifaces: list[str] = []
+    for iface in sorted(sys_class.iterdir()):
+        name = iface.name
+        if name == "lo":
+            continue
+        if (iface / "wireless").exists():
+            continue
+        carrier = iface / "carrier"
+        operstate = iface / "operstate"
+        type_path = iface / "type"
+        try:
+            if type_path.exists() and type_path.read_text().strip() != "1":
+                continue
+            has_carrier = carrier.exists() and carrier.read_text().strip() == "1"
+            is_up = operstate.exists() and operstate.read_text().strip() == "up"
+            if has_carrier or is_up:
+                ifaces.append(name)
+        except OSError:
+            continue
     return ifaces
 
 
@@ -360,6 +388,8 @@ class NetworkScreen(WizardScreen):
     def on_mount(self) -> None:
         self.app.state.wired_ifaces = wired_ifaces()
         self.app.state.wired_connected = bool(self.app.state.wired_ifaces)
+        if self.app.state.use_ethernet is None:
+            self.app.state.use_ethernet = self.app.state.wired_connected
         self.refresh_wifi()
 
     def compose_body(self) -> ComposeResult:
@@ -386,10 +416,10 @@ class NetworkScreen(WizardScreen):
             iface_list = ", ".join(self.app.state.wired_ifaces)
             wired_label.update(f"Wired connection detected on: {iface_list}.")
         else:
-            wired_label.update("No wired connection detected.")
+            wired_label.update("No wired connection detected. If this is wrong, tick 'Use Ethernet' and continue.")
 
         use_ethernet = self.query_one("#use_ethernet", Checkbox)
-        use_ethernet.value = self.app.state.wired_connected
+        use_ethernet.value = bool(self.app.state.use_ethernet)
         self.set_wifi_enabled(not use_ethernet.value)
 
     def set_wifi_enabled(self, enabled: bool) -> None:
@@ -404,6 +434,7 @@ class NetworkScreen(WizardScreen):
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id == "use_ethernet":
+            self.app.state.use_ethernet = event.value
             self.set_wifi_enabled(not event.value)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -415,8 +446,6 @@ class NetworkScreen(WizardScreen):
     def validate(self) -> str | None:
         use_ethernet = self.query_one("#use_ethernet", Checkbox).value
         if use_ethernet:
-            if not self.app.state.wired_connected:
-                return "No wired connection detected. Plug in Ethernet or use Wi-Fi."
             return None
         ssid = self.query_one("#ssid", Input).value.strip()
         if not ssid:
