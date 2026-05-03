@@ -847,7 +847,10 @@ def build_disk_config(state: InstallerState, log: Callable[[str], None]):
     from archinstall.lib.models.users import Password
 
     device_path = Path(state.disk_device)
+    if device_path.exists():
+        settle_block_devices(state.disk_device, log)
     device_handler.load_devices()
+    log("archinstall detected disks: " + ", ".join(str(d.device_info.path) for d in device_handler.devices))
     device = device_handler.get_device(device_path)
     if not device:
         log("Selected disk not found by archinstall, rescanning devices")
